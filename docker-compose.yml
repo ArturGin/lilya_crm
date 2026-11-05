@@ -1,0 +1,83 @@
+# Production-style stack: Postgres + app + Caddy (automatic HTTPS),
+# optionally a self-hosted Whisper server for speech transcription.
+#
+#   cp .env.example .env            # fill in DOMAIN, POSTGRES_PASSWORD, keys
+#   docker compose up -d --build                     # without self-hosted Whisper
+#   docker compose --profile whisper up -d --build   # with self-hosted Whisper
+#   docker compose exec app lilya create-user -email you@example.com -admin
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lilya
+      POSTGRES_USER: lilya
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lilya -d lilya"]
+      interval: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://lilya:${POSTGRES_PASSWORD}@db:5432/lilya?sslmode=disable
+      PUBLIC_URL: https://${DOMAIN}
+      TRUST_PROXY: "true"
+      COOKIE_SECURE: "true"
+    volumes:
+      - media:/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+  # --- optional: self-hosted speech-to-text (OpenAI-compatible API) ---
+  # Set TRANSCRIBE_BASE_URL=http://whisper:8000/v1 in .env. CPU inference:
+  # faster-whisper-small transcribes roughly in real time on 4 cores;
+  # "Systran/faster-whisper-base" is ~3x faster, "...-medium" more accurate.
+  whisper:
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    profiles: [whisper]
+    restart: unless-stopped
+    volumes:
+      - whisper_models:/home/ubuntu/.cache/huggingface/hub
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      retries: 30
+
+  # Downloads the configured model into the whisper volume (idempotent).
+  whisper-model:
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    profiles: [whisper]
+    restart: "no"
+    entrypoint: ["curl", "-fsS", "-X", "POST", "http://whisper:8000/v1/models/${TRANSCRIBE_MODEL:-Systran/faster-whisper-small}"]
+    depends_on:
+      whisper:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  media:
+  caddy_data:
+  caddy_config:
+  whisper_models:
