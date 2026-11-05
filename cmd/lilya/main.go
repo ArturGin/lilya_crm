@@ -32,6 +32,7 @@ import (
 	"github.com/lilya/practice/internal/pipeline"
 	"github.com/lilya/practice/internal/storage"
 	"github.com/lilya/practice/internal/store"
+	"github.com/lilya/practice/internal/telegram"
 	"github.com/lilya/practice/internal/worker"
 	"github.com/lilya/practice/web"
 )
@@ -129,6 +130,22 @@ func serve(ctx context.Context, log *slog.Logger) error {
 	}
 	pl.Register()
 
+	var bot *telegram.Bot
+	if cfg.TelegramBotToken != "" {
+		bot = &telegram.Bot{
+			Client:        &telegram.Client{BaseURL: cfg.TelegramAPIURL, Token: cfg.TelegramBotToken},
+			Store:         st,
+			Pipeline:      pl,
+			Log:           log.With("component", "telegram"),
+			PublicURL:     cfg.PublicURL,
+			Lang:          cfg.AnalysisLanguage,
+			MaxVideoBytes: cfg.MaxVideoBytes,
+		}
+		pl.Notify = bot
+	} else {
+		log.Info("telegram bot disabled (set TELEGRAM_BOT_TOKEN)")
+	}
+
 	api := &httpapi.Server{Cfg: cfg, Store: st, Storage: local, Pipeline: pl, Log: log, WebFS: web.FS()}
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -144,6 +161,13 @@ func serve(ctx context.Context, log *slog.Logger) error {
 	go func() {
 		w.Run(workerCtx)
 		close(workerDone)
+	}()
+	botDone := make(chan struct{})
+	go func() {
+		defer close(botDone)
+		if bot != nil {
+			bot.Run(workerCtx)
+		}
 	}()
 
 	errCh := make(chan error, 1)
@@ -169,6 +193,7 @@ func serve(ctx context.Context, log *slog.Logger) error {
 	_ = srv.Shutdown(shutdownCtx)
 	stopWorker()
 	<-workerDone
+	<-botDone
 	return nil
 }
 
@@ -317,7 +342,10 @@ func setPassword(ctx context.Context, log *slog.Logger, args []string) error {
 		if err := st.DeleteUserSessions(ctx, u.ID, 0); err != nil {
 			return err
 		}
-		fmt.Println("password updated; all sessions revoked")
+		if err := st.UnlinkUserTelegram(ctx, u.ID); err != nil {
+			return err
+		}
+		fmt.Println("password updated; all sessions (and the Telegram bot login) revoked")
 		return nil
 	})
 }
@@ -342,3 +370,4 @@ func setRole(ctx context.Context, log *slog.Logger, args []string) error {
 		return nil
 	})
 }
+

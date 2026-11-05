@@ -20,6 +20,7 @@ internal/
   pipeline/           background jobs: video.process → video.analyze
   worker/             Postgres-backed job runner
   httpapi/            JSON API + SPA hosting
+  telegram/           admin bot: pipeline notifications, video uploads
 web/                  React + TypeScript SPA (built into web/dist and embedded into the binary)
 deploy/Caddyfile      reverse proxy with automatic HTTPS
 ```
@@ -51,7 +52,7 @@ Tests:
 
 ```bash
 go test ./...
-createdb lilya_test && TEST_DATABASE_URL="postgres://$USER@localhost:5432/lilya_test?sslmode=disable" go test ./internal/pipeline
+createdb lilya_test && TEST_DATABASE_URL="postgres://$USER@localhost:5432/lilya_test?sslmode=disable" go test ./internal/pipeline ./internal/telegram   # use an empty database
 cd web && npm run typecheck
 ```
 
@@ -95,6 +96,35 @@ All settings are environment variables. See `.env.example`. The main ones:
 | `CLAUDE_INPUTS` | `transcript,frames` | what Claude looks at |
 | `CLAUDE_MAX_FRAMES` | `90` | frames sampled per video (at most 1 frame per 8 s) |
 | `MAX_VIDEO_MB` / `MAX_IMAGE_MB` | `4096` / `20` | |
+| `TELEGRAM_BOT_TOKEN` | — | enables the admin Telegram bot |
+| `TELEGRAM_API_URL` | `https://api.telegram.org` | Bot API endpoint; a local server lifts the 20 MB download limit |
+
+## Telegram bot
+
+With `TELEGRAM_BOT_TOKEN` set (create a bot with [@BotFather](https://t.me/BotFather)), the server runs an admin bot:
+
+- **Notifications.** Logged-in admins get a message when a video is processed (or fails), and when its analysis is
+  ready (summary, focus, body areas, poses, plus a link to the post) or fails.
+- **Uploads.** An admin sends a video to the bot, and it becomes a draft post. The first line of the caption is the
+  title and the rest is the description. The video then goes through the usual processing and analysis. Send videos
+  *as a file* (📎 → File) so Telegram doesn't re-compress them.
+
+**Logging in.** Open the bot and send `/login`. It asks for the email and password of your website account and
+deletes the password message from the chat right away. Admins get notifications and can upload videos. Members can
+log in too, but get nothing until they're made admins. `/logout` stops notifications. Changing your password, on the
+site or with `lilya set-password`, also logs you out of the bot. Failed logins are rate-limited (5 per 15 minutes
+per Telegram account and per email).
+
+**Large videos.** The public Bot API only lets bots download files up to **20 MB**. To accept real practice
+videos (up to 2 GB, or 4 GB with Telegram Premium), run the local Bot API server bundled as a Compose profile:
+
+1. Get `api_id` and `api_hash` at <https://my.telegram.org> (API development tools).
+2. Move the bot off the public API once: `curl https://api.telegram.org/bot<TOKEN>/logOut`.
+3. In `.env`, set `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and `TELEGRAM_API_URL=http://telegram-bot-api:8081`.
+4. `docker compose --profile telegram up -d` (add `--profile whisper` if you use it).
+
+The server stores downloads on the app's `/data` volume. The app moves each video into media storage and deletes
+the server's copy.
 
 ## Video analysis
 

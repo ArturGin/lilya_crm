@@ -219,8 +219,12 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	// Sign out every other device.
+	// Sign out every other device, including the Telegram bot.
 	if err := s.Store.DeleteUserSessions(r.Context(), u.ID, sess.ID); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if err := s.Store.UnlinkUserTelegram(r.Context(), u.ID); err != nil {
 		s.internalError(w, r, err)
 		return
 	}

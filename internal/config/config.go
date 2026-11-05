@@ -58,6 +58,12 @@ type Config struct {
 	ClaudeInputs     []string // "transcript", "frames"
 	ClaudeMaxFrames  int
 	ClaudeFrameWidth int
+
+	// Admin Telegram bot (notifications + video uploads). Off without a token.
+	TelegramBotToken string
+	// TelegramAPIURL is the Bot API endpoint: the public one (20 MB download
+	// limit) or a local telegram-bot-api server started with --local.
+	TelegramAPIURL string
 }
 
 func Load() (Config, error) {
@@ -93,6 +99,9 @@ func Load() (Config, error) {
 		ClaudeInputs:     list(env("CLAUDE_INPUTS", "transcript,frames")),
 		ClaudeMaxFrames:  int(envInt64("CLAUDE_MAX_FRAMES", 90)),
 		ClaudeFrameWidth: int(envInt64("CLAUDE_FRAME_WIDTH", 768)),
+
+		TelegramBotToken: env("TELEGRAM_BOT_TOKEN", ""),
+		TelegramAPIURL:   strings.TrimRight(env("TELEGRAM_API_URL", "https://api.telegram.org"), "/"),
 	}
 	c.TranscribeLanguage = env("TRANSCRIBE_LANGUAGE", c.AnalysisLanguage)
 	if c.TranscribeLanguage == "auto" {

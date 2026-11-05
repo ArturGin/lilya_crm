@@ -3,7 +3,6 @@ package httpapi
 import (
 	"bufio"
 	"errors"
-	"fmt"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
@@ -164,8 +163,6 @@ func (s *Server) adminDeletePost(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-var videoExts = map[string]bool{".mp4": true, ".mov": true, ".m4v": true, ".webm": true, ".mkv": true, ".avi": true}
-
 // nextFilePart streams the multipart body up to the part named "file". Other
 // small text fields (e.g. "caption") encountered first are collected.
 func nextFilePart(r *http.Request, fields map[string]string) (*multipart.Part, error) {
@@ -223,45 +220,18 @@ func (s *Server) adminUploadVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer part.Close()
-	filename := filepath.Base(part.FileName())
-	ext := strings.ToLower(filepath.Ext(filename))
-	if !videoExts[ext] {
-		writeError(w, http.StatusBadRequest, "unsupported_type", "supported video formats: mp4, mov, m4v, webm, mkv, avi")
+	_, err = s.Pipeline.IngestVideo(r.Context(), id, &u.ID, part.FileName(), part)
+	switch {
+	case errors.Is(err, pipeline.ErrUnsupportedVideo):
+		writeError(w, http.StatusBadRequest, "unsupported_type", err.Error())
 		return
-	}
-
-	key := path.Join("videos", storage.NewID(), "original"+ext)
-	size, err := s.Storage.Put(r.Context(), key, part)
-	if err != nil {
-		_ = s.Storage.Delete(r.Context(), key)
+	case errors.Is(err, pipeline.ErrEmptyFile):
+		writeError(w, http.StatusBadRequest, "bad_upload", err.Error())
+		return
+	case err != nil:
 		uploadError(s, w, r, err)
 		return
 	}
-	if size == 0 {
-		_ = s.Storage.Delete(r.Context(), key)
-		writeError(w, http.StatusBadRequest, "bad_upload", "file is empty")
-		return
-	}
-
-	asset, oldID, err := s.Store.AttachVideo(r.Context(), id, store.NewAsset{
-		Kind: store.AssetVideo, StorageKey: key, OriginalFilename: truncate(filename, 255),
-		ContentType: "video/" + strings.TrimPrefix(ext, "."), SizeBytes: size,
-		Status: store.AssetUploaded, UploadedBy: &u.ID,
-	})
-	if err != nil {
-		_ = s.Storage.Delete(r.Context(), key)
-		s.internalError(w, r, err)
-		return
-	}
-	if oldID != nil {
-		s.Pipeline.DeleteAssets(r.Context(), []int64{*oldID})
-	}
-	if err := s.Pipeline.Worker.Enqueue(r.Context(), pipeline.JobProcessVideo, pipeline.ProcessPayload{AssetID: asset.ID}); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	s.Log.Info("video uploaded, processing queued", "component", "pipeline", "post_id", id, "asset_id", asset.ID,
-		"file", filename, "key", key, "size_mb", fmt.Sprintf("%.1f", float64(size)/(1<<20)), "replaced_asset_id", oldID)
 	s.writeAdminPost(w, r, id, http.StatusAccepted)
 }
 

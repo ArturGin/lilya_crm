@@ -44,6 +44,7 @@ type Pipeline struct {
 	Log      *slog.Logger
 	TempDir  string
 	Lang     string
+	Notify   Notifier // optional
 }
 
 func (p *Pipeline) Register() {
@@ -201,11 +202,17 @@ func (h processHandler) Handle(ctx context.Context, raw json.RawMessage) error {
 		return err
 	}
 	log.Info("video ready", "post_ids", postIDs, "took", time.Since(start).Round(time.Second).String())
+	queued := false
 	for _, postID := range postIDs {
-		if _, err := p.StartAnalysis(ctx, postID, asset.ID, nil); err != nil && !errors.Is(err, ErrAnalysisDisabled) {
+		_, err := p.StartAnalysis(ctx, postID, asset.ID, nil)
+		if err != nil && !errors.Is(err, ErrAnalysisDisabled) {
 			return err
 		}
+		queued = queued || err == nil
 	}
+	notice := VideoNotice{AssetID: asset.ID, PostIDs: postIDs, OK: true, AnalysisQueued: queued,
+		DurationSeconds: int(math.Round(probe.DurationSeconds)), Width: probe.Width, Height: probe.Height}
+	p.notify(func(ctx context.Context, n Notifier) { n.VideoProcessed(ctx, notice) })
 	return nil
 }
 
@@ -215,6 +222,9 @@ func (h processHandler) OnFinalFailure(ctx context.Context, raw json.RawMessage,
 		h.p.Log.Error("video processing failed", "asset_id", in.AssetID, "err", err)
 		msg := err.Error()
 		_ = h.p.Store.SetAssetStatus(ctx, in.AssetID, store.AssetFailed, &msg)
+		postIDs, _ := h.p.Store.PostIDsByVideo(ctx, in.AssetID)
+		notice := VideoNotice{AssetID: in.AssetID, PostIDs: postIDs, Error: msg}
+		h.p.notify(func(ctx context.Context, n Notifier) { n.VideoProcessed(ctx, notice) })
 	}
 }
 
@@ -341,8 +351,11 @@ func (h analyzeHandler) Handle(ctx context.Context, raw json.RawMessage) error {
 	if err := p.Store.ReplaceAITags(ctx, post.ID, tags); err != nil {
 		return err
 	}
+	took := time.Since(start)
 	log.Info("analysis done", "tags", len(tags), "poses", len(res.Poses), "input_tokens", inTok,
-		"output_tokens", outTok, "took", time.Since(start).Round(time.Second).String())
+		"output_tokens", outTok, "took", took.Round(time.Second).String())
+	notice := AnalysisNotice{AnalysisID: a.ID, PostID: post.ID, OK: true, Result: &res, Took: took}
+	p.notify(func(ctx context.Context, n Notifier) { n.AnalysisFinished(ctx, notice) })
 	return nil
 }
 
@@ -351,6 +364,10 @@ func (h analyzeHandler) OnFinalFailure(ctx context.Context, raw json.RawMessage,
 	if json.Unmarshal(raw, &in) == nil {
 		h.p.Log.Error("analysis failed", "analysis_id", in.AnalysisID, "err", err)
 		_ = h.p.Store.FailAnalysis(ctx, in.AnalysisID, err.Error())
+		if a, aerr := h.p.Store.AnalysisByID(ctx, in.AnalysisID); aerr == nil {
+			notice := AnalysisNotice{AnalysisID: a.ID, PostID: a.PostID, Error: err.Error()}
+			h.p.notify(func(ctx context.Context, n Notifier) { n.AnalysisFinished(ctx, notice) })
+		}
 	}
 }
 
