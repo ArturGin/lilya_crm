@@ -1,11 +1,24 @@
-{$DOMAIN} {
+{
+	servers {
+		# Requests from private addresses (a Cloudflare Tunnel / cloudflared on
+		# this machine or network) are proxies: take the visitor's IP from the
+		# headers they set. Public clients can't spoof it.
+		trusted_proxies static private_ranges
+		client_ip_headers Cf-Connecting-Ip X-Forwarded-For
+	}
+}
+
+# SITE_ADDRESS defaults to DOMAIN (automatic HTTPS). Behind a Cloudflare Tunnel
+# set SITE_ADDRESS=:80 so Caddy serves plain HTTP and Cloudflare does HTTPS;
+# otherwise HTTP→HTTPS redirects loop forever.
+{$SITE_ADDRESS} {
 	encode zstd gzip
 	request_body {
 		max_size 5GB
 	}
 	reverse_proxy app:8080 {
 		# Overwrite (not append) so clients cannot spoof their IP.
-		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-For {client_ip}
 	}
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"

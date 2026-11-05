@@ -44,7 +44,8 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      DOMAIN: ${DOMAIN}
+      # Behind a Cloudflare Tunnel set SITE_ADDRESS=:80 in .env (see deploy/Caddyfile).
+      SITE_ADDRESS: ${SITE_ADDRESS:-${DOMAIN}}
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
